@@ -1,0 +1,2 @@
+const reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+if(!reduced && 'IntersectionObserver' in window){const observer=new IntersectionObserver(entries=>{for(const entry of entries){const v=entry.target;if(entry.isIntersecting){v.play().catch(()=>{});}else{v.pause();}}},{threshold:0.2});document.querySelectorAll('video[data-autoplay]').forEach(v=>observer.observe(v));}
