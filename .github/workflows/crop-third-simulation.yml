@@ -1,0 +1,55 @@
+name: Crop third simulation montage
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  crop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Ensure FFmpeg is available
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+      - name: Remove the bottom row and update the poster
+        shell: python
+        run: |
+          import json, subprocess
+          from pathlib import Path
+          source = 'assets/simulation-montage-3.mp4'
+          def probe(path):
+              return json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_entries', 'stream=width,height,r_frame_rate:format=duration', '-of', 'json', path]))
+          before = probe(source)
+          assert (before['streams'][0]['width'], before['streams'][0]['height']) == (1440, 810), 'Unexpected original dimensions; refusing to crop again'
+          Path('cropped').mkdir()
+          subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-i', source, '-vf', 'crop=1440:540:0:0', '-c:v', 'libx264', '-crf', '18', '-preset', 'medium', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-an', 'cropped/simulation-montage-3.mp4'], check=True)
+          subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-i', 'cropped/simulation-montage-3.mp4', '-frames:v', '1', '-q:v', '2', 'cropped/simulation-montage-3.jpg'], check=True)
+          after = probe('cropped/simulation-montage-3.mp4')
+          assert (after['streams'][0]['width'], after['streams'][0]['height']) == (1440, 540)
+          assert before['streams'][0]['r_frame_rate'] == after['streams'][0]['r_frame_rate']
+          assert abs(float(before['format']['duration']) - float(after['format']['duration'])) < 0.01
+          print('Verified: 3 columns x 2 rows, 1440x540, original duration and frame rate preserved.')
+      - name: Commit only the updated video and poster
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (context.ref !== 'refs/heads/main') throw new Error('Run only on main');
+            const repo = { owner: context.repo.owner, repo: context.repo.repo };
+            const head = await github.rest.git.getRef({ ...repo, ref: 'heads/main' });
+            if (head.data.object.sha !== context.sha) throw new Error('main changed while cropping; refusing to overwrite changes');
+            const base = await github.rest.git.getCommit({ ...repo, commit_sha: context.sha });
+            const tree = [];
+            for (const name of ['simulation-montage-3.mp4', 'simulation-montage-3.jpg']) {
+              const blob = await github.rest.git.createBlob({ ...repo, encoding: 'base64', content: fs.readFileSync('cropped/' + name).toString('base64') });
+              tree.push({ path: 'assets/' + name, mode: '100644', type: 'blob', sha: blob.data.sha });
+            }
+            const newTree = await github.rest.git.createTree({ ...repo, base_tree: base.data.tree.sha, tree });
+            const commit = await github.rest.git.createCommit({ ...repo, message: 'Remove bottom row from third simulation trajectory video and poster', tree: newTree.data.sha, parents: [context.sha] });
+            await github.rest.git.updateRef({ ...repo, ref: 'heads/main', sha: commit.data.sha, force: false });
+            await core.summary.addRaw('Updated only the third simulation montage video and its poster. Kept the top two rows and preserved duration and frame rate.').write();
